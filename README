@@ -1,0 +1,3 @@
+安裝環境步驟
+1.安裝git bash,2.到要和github連動的資料夾開啟終端機,3.初始化git,4.加入檔案,5.提交(commit),6.加入github遠端連結,7.推送到github
+遇到的問題:推送至github失敗
