@@ -32,7 +32,7 @@ warnings.filterwarnings(
 """
 資料是.csv file，每一個csv file 代表同一機台，在不同日期、不同加工設定的測量數據。
 訓練資料: 檔案數量=43，資料總筆數=29795。
-測試資料: 檔案數量=13，資料總筆數=8883，測試資料的每筆檔案，只有前100筆資料有 ground truth。
+測試資料: 檔案數量=13，測試資料的每個檔案，只有100筆資料。
 訓練資料路徑: '/home/user/114_Manufacturing/2025_BigData/train1/'。
 測試資料路徑: '/home/user/114_Manufacturing/2025_BigData/test1/'。
 每個檔案，總共紀錄5-6小時的機台數據。
@@ -91,18 +91,15 @@ def build_dataset(args, train_df, test_df, df_all):
     prediction_length = args.max_prediction_length  # 你希望模型一次預測未來多長的資料。
     b_size = args.batch_size
     num_workers = args.num_workers
+    # --- 定義訓練集的邊界 ---
     # 找到所有時間序列中，可以用於建立驗證集的分割點
     # 這個分割點是整個訓練資料的最後一個時間點，減去預測長度
     validation_cutoff = train_df["time_idx"].max() - prediction_length
     # 根據分割點建立訓練專用的 DataFrame
     training_df_for_dataset = train_df[lambda x: x.time_idx <= validation_cutoff]
-    # --- 定義訓練集的邊界 ---
-    # 我們只用 train_df 中的資料來產生訓練和驗證樣本
-    # training_cutoff 是 train_df 中最後一個可用來訓練的時間點
-    training_cutoff = train_df["time_idx"].max()
     # --- 實例化 TimeSeriesDataSet ---
     training_dataset = TimeSeriesDataSet(
-        train_df,  # << 只傳入訓練資料的子集
+        training_df_for_dataset,  # << 只傳入訓練資料的子集
         time_idx="time_idx",
         target=["disp_x", "disp_z"],  # << 多目標預測，傳入 list
         group_ids=["group_id"],
@@ -134,7 +131,7 @@ def build_dataset(args, train_df, test_df, df_all):
     # --- 建立驗證集和 DataLoader ---
     # from_dataset 會自動使用 training_dataset 的設定 (例如正規化參數)
     # 它會自動從 training_cutoff 之後的資料點生成驗證樣本
-    validation_dataset = TimeSeriesDataSet.from_dataset(training_dataset, train_df, predict=False,
+    validation_dataset = TimeSeriesDataSet.from_dataset(training_dataset, train_df, predict=True,
                                                         stop_randomization=True)
     train_dataloader = training_dataset.to_dataloader(train=True, batch_size=b_size,
                                                       num_workers=num_workers)
@@ -142,9 +139,6 @@ def build_dataset(args, train_df, test_df, df_all):
     test_dataset = TimeSeriesDataSet.from_dataset(
         training_dataset,  # 使用training_dataset的參數設定
         test_df,
-        # 在這裡設定 predict=True 通常是為了讓 dataset 知道這是在做預測，
-        # 它會自動處理一些邊界情況，但對於建立一個標準的 dataloader 來說不是強制性的。
-        predict=True,
         stop_randomization=True  # 確保資料順序不變
     )
     test_dataloader = test_dataset.to_dataloader(
@@ -152,7 +146,6 @@ def build_dataset(args, train_df, test_df, df_all):
         shuffle=False,  # 測試時絕對不能打亂順序
         num_workers=num_workers
     )
-
     return train_dataloader, val_dataloader, training_dataset, test_dataloader
 
 
@@ -262,8 +255,10 @@ def testing(best_model_path, test_dataloader):
     # predictions_list[1] 是 disp_z 的預測張量
     predictions_z_all_quantiles = predictions_list[1].cpu().numpy()
     # 從第 3 個維度（索引為 2）中，只取出索引為 MEDIAN_IDX 的切片
-    predictions_x = predictions_x_all_quantiles[:, :, 3]
-    predictions_z = predictions_z_all_quantiles[:, :, 3]
+    # 預設 QuantileLoss 的 quantiles=[0.02, 0.1, 0.25, 0.5, 0.75, 0.9, 0.98]，中位數 (0.5) 的索引為 3
+    MEDIAN_IDX = 3
+    predictions_x = predictions_x_all_quantiles[:, :, MEDIAN_IDX]
+    predictions_z = predictions_z_all_quantiles[:, :, MEDIAN_IDX]
 
     actuals_x_list = []
     actuals_z_list = []
