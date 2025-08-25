@@ -91,6 +91,11 @@ def build_dataset(args, train_df, test_df, df_all):
     prediction_length = args.max_prediction_length  # 你希望模型一次預測未來多長的資料。
     b_size = args.batch_size
     num_workers = args.num_workers
+    # 找到所有時間序列中，可以用於建立驗證集的分割點
+    # 這個分割點是整個訓練資料的最後一個時間點，減去預測長度
+    validation_cutoff = train_df["time_idx"].max() - prediction_length
+    # 根據分割點建立訓練專用的 DataFrame
+    training_df_for_dataset = train_df[lambda x: x.time_idx <= validation_cutoff]
     # --- 定義訓練集的邊界 ---
     # 我們只用 train_df 中的資料來產生訓練和驗證樣本
     # training_cutoff 是 train_df 中最後一個可用來訓練的時間點
