@@ -1,0 +1,11 @@
+name: manu
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - pandas
+  - pathlib
+  - matplotlib
+  - tensorboard
+  - statsmodels
+prefix: /home/user/miniconda3/envs/manu
