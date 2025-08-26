@@ -23,6 +23,8 @@ from pytorch_forecasting import (
 )
 from pytorch_forecasting.metrics import MAE, SMAPE, MultiLoss, RMSE
 from lightning.pytorch.tuner import Tuner
+import testing
+import drawer
 import warnings
 warnings.filterwarnings(
     "ignore",
@@ -44,6 +46,12 @@ warnings.filterwarnings(
 ground truth 是 26th to 27th column，代表X、 Z方向的熱變位量，標頭名稱是 'Disp. X', 'Disp. Z'。
 """
 
+def static(df):
+    disp_x_stats = df['disp_x'].describe()
+    disp_z_stats = df['disp_z'].describe()
+    print("Disp. X 統計數據:\n", disp_x_stats)
+    print("\nDisp. Z 統計數據:\n", disp_z_stats)
+
 def clean_df(df):
     # 使用 list comprehension 清理所有欄位名稱
     # 規則：移除前後空白 -> 轉為小寫 -> 將空格替換為底線 -> 移除句點
@@ -62,6 +70,7 @@ def load_and_preprocess_data(data_path: str, prefix: str, is_test_set: bool = Fa
         # 讀取單一 CSV 檔案
         temp_df = pd.read_csv(file_path)
         # 用檔案日期建立唯一的 'group_id'
+        temp_df = clean_df(temp_df)
         filename_stem = file_path.stem # 取得檔名 (不含副檔名)
         # 使用正規表示式來安全地提取日期
         # r"_(\d{8})_" 的意思是尋找被底線包圍的 8 個數字
@@ -77,11 +86,16 @@ def load_and_preprocess_data(data_path: str, prefix: str, is_test_set: bool = Fa
 
         # 根據浮點數時間 'Time' 進行排序
         # 這是建立正確 time_idx 的絕對前提
-        temp_df = temp_df.sort_values(by='Time').reset_index(drop=True)
+        temp_df = temp_df.sort_values(by='time').reset_index(drop=True)
 
         # 建立從 0 開始的整數 'time_idx'
         # 直接使用排序後的新索引
         temp_df['time_idx'] = temp_df.index
+        # .diff() 會計算與前一行的差值
+        # 每個 group 的第一筆資料會產生 NaN，我們用 0 填充
+        temp_df['disp_x_diff'] = temp_df['disp_x'].diff().fillna(0)
+        temp_df['disp_z_diff'] = temp_df['disp_z'].diff().fillna(0)
+        # --- 修改結束 ---
         df_list.append(temp_df)
 
     return pd.concat(df_list, ignore_index=True)
@@ -99,9 +113,10 @@ def build_dataset(args, train_df, test_df, df_all):
     training_df_for_dataset = train_df[lambda x: x.time_idx <= validation_cutoff]
     # --- 實例化 TimeSeriesDataSet ---
     training_dataset = TimeSeriesDataSet(
-        training_df_for_dataset,  # << 只傳入訓練資料的子集
+        training_df_for_dataset,  # 只傳入訓練資料的子集
         time_idx="time_idx",
-        target=["disp_x", "disp_z"],  # << 多目標預測，傳入 list
+        # target=["disp_x", "disp_z"],  #  多目標預測，傳入 list
+        target=["disp_x_diff", "disp_z_diff"],  #  多目標預測，傳入 list
         group_ids=["group_id"],
         max_encoder_length=encoder_length,
         max_prediction_length=prediction_length,
@@ -113,6 +128,7 @@ def build_dataset(args, train_df, test_df, df_all):
         # 隨時間改變，但未來未知的特徵 (所有感測器讀數)
         time_varying_unknown_reals=[
             "disp_x", "disp_z",
+            "disp_x_diff", "disp_z_diff",
             'pt01', 'pt02', 'pt03', 'pt04', 'pt05', 'pt06', 'pt07', 'pt08', 'pt09', 'pt10', 'pt11', 'pt12', 'pt13',
             'tc01', 'tc02', 'tc03', 'tc04', 'tc05', 'tc06', 'tc07', 'tc08',
             'spindle_motor', 'x_motor', 'z_motor'
@@ -241,73 +257,110 @@ def training(args,train_dataloader, val_dataloader, training_dataset):
 
     return best_model_path,
 
-def testing(best_model_path, test_dataloader):
+
+def tft(best_model_path, test_dataloader, training_dataset):
     best_model_path = best_model_path[0]
     best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
     print("已成功從檢查點載入最佳模型。")
+    best_tft.eval()
 
-    # 執行預測
-    # .predict() 會回傳一個包含預測值的 list，以及一個包含索引資訊的 DataFrame
-    # 我們需要將模型切換到評估模式 .eval()
-    predictions_list = best_tft.predict(test_dataloader, mode="raw")["prediction"]
-    # predictions_list[0] 是 disp_x 的預測張量
-    predictions_x_all_quantiles = predictions_list[0].cpu().numpy()
-    # predictions_list[1] 是 disp_z 的預測張量
-    predictions_z_all_quantiles = predictions_list[1].cpu().numpy()
-    # 從第 3 個維度（索引為 2）中，只取出索引為 MEDIAN_IDX 的切片
-    # 預設 QuantileLoss 的 quantiles=[0.02, 0.1, 0.25, 0.5, 0.75, 0.9, 0.98]，中位數 (0.5) 的索引為 3
-    MEDIAN_IDX = 3
-    predictions_x = predictions_x_all_quantiles[:, :, MEDIAN_IDX]
-    predictions_z = predictions_z_all_quantiles[:, :, MEDIAN_IDX]
+    try:
+        device = next(best_tft.parameters()).device
+    except StopIteration:
+        device = torch.device("cpu")
+    print(f"模型已載入，並位於設備: {device}")
 
-    actuals_x_list = []
-    actuals_z_list = []
-    print("正在從 DataLoader 收集真實值...")
-    for x, y in iter(test_dataloader):
-        # y[0] is a list: [tensor_for_disp_x, tensor_for_disp_z]
-        actuals_x_list.append(y[0][0])
-        actuals_z_list.append(y[0][1])
+    reals_order = training_dataset.reals
+    idx_x_abs = reals_order.index('disp_x')
+    idx_z_abs = reals_order.index('disp_z')
 
-    # --- 將收集到的 tensor list 分別拼接起來 ---
-    actuals_x = torch.cat(actuals_x_list).cpu().numpy()
-    actuals_z = torch.cat(actuals_z_list).cpu().numpy()
+    final_predictions_x = []
+    final_predictions_z = []
+    final_actuals_x = []
+    final_actuals_z = []
 
-    print("真實值收集並拼接完成。")
-    # --- 現在，所有資料都已對齊，可以安全地計算指標 ---
-    print("\n--- 定量效能評估 (最終修正版) ---")
-    # 評估 Disp X (索引為 0)
+    print("正在逐批次進行預測與還原...")
+    with torch.no_grad():
+        for x, y in iter(test_dataloader):
+            # 轉移數據到指定設備
+            x_on_device = {}
+            for key, val in x.items():
+                if isinstance(val, torch.Tensor):
+                    # 如果值是張量，移動到設備
+                    x_on_device[key] = val.to(device)
+                elif isinstance(val, list) and len(val) > 0 and isinstance(val[0], torch.Tensor):
+                    # 如果值是張量列表，逐一移動
+                    x_on_device[key] = [v.to(device) for v in val]
+                else:
+                    # 如果是其他類型 (例如 int 列表)，保持原樣
+                    x_on_device[key] = val
+
+            # 使用處理過、包含完整資訊的 x_on_device 進行預測
+            model_output = best_tft(x_on_device)
+
+            pred_diffs_x = model_output["prediction"][0][:, :, 3]
+            pred_diffs_z = model_output["prediction"][1][:, :, 3]
+
+            start_x = x_on_device['encoder_cont'][:, -1, idx_x_abs]
+            start_z = x_on_device['encoder_cont'][:, -1, idx_z_abs]
+            actuals_x_batch = x_on_device['decoder_cont'][..., idx_x_abs]
+            actuals_z_batch = x_on_device['decoder_cont'][..., idx_z_abs]
+
+            num_predictions_batch = pred_diffs_x.shape[0]
+            start_x_batch = start_x[:num_predictions_batch]
+            start_z_batch = start_z[:num_predictions_batch]
+
+            reconstructed_x = torch.cumsum(torch.cat([start_x_batch.unsqueeze(1), pred_diffs_x], dim=1), dim=1)[:, 1:]
+            reconstructed_z = torch.cumsum(torch.cat([start_z_batch.unsqueeze(1), pred_diffs_z], dim=1), dim=1)[:, 1:]
+
+            pred_len = reconstructed_x.shape[1]
+
+            final_predictions_x.extend(reconstructed_x.flatten().cpu().numpy())
+            final_predictions_z.extend(reconstructed_z.flatten().cpu().numpy())
+            final_actuals_x.extend(actuals_x_batch[:, :pred_len].flatten().cpu().numpy())
+            final_actuals_z.extend(actuals_z_batch[:, :pred_len].flatten().cpu().numpy())
+
+    predictions_x = np.array(final_predictions_x)
+    predictions_z = np.array(final_predictions_z)
+    actuals_x = np.array(final_actuals_x)
+    actuals_z = np.array(final_actuals_z)
+
+    print("\n--- 定量效能評估 (一階差分還原後) ---")
     rmse_x = np.sqrt(mean_squared_error(actuals_x, predictions_x))
     print(f"Disp. X - RMSE: {rmse_x:.4f}")
     print("-" * 20)
-    # 評估 Disp Z (索引為 1)
     rmse_z = np.sqrt(mean_squared_error(actuals_z, predictions_z))
     print(f"Disp. Z - RMSE: {rmse_z:.4f}")
+
     return 0
+
 
 def main():
     args = parser.parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
-    # --- 資料處理流程 ---
     # step 1: 讀取指定目錄下的所有 CSV 檔案，並將它們處理、合併成一個 DataFrame。
     train_df = load_and_preprocess_data(args.train_data_dir, prefix='train', is_test_set=False)
     test_df = load_and_preprocess_data(args.test_data_dir, prefix='test', is_test_set=True)
     print("\n--- 資料讀取成功！---")
     train_df['data_type'] = 'train'
     test_df['data_type'] = 'test'
-    train_df = clean_df(train_df)
-    test_df = clean_df(test_df)
     df_all = pd.concat([train_df, test_df], ignore_index=True)
+    # drawer.acf_plot(test_df)  # 畫資料acf
+    # static(train_df)  # 統計資料mean, std...
 
     # step 2: 定義並實例化 TimeSeriesDataSet 物件。
     train_dataloader, val_dataloader, training_dataset, test_dataloader = build_dataset(args, train_df, test_df, df_all)
     print("\n--- TimeSeriesDataSet 和 DataLoader 建立成功！---")
+    # testing.baseline(test_dataloader)  # 用baseline model 測試
 
     # step 3: 定義模型、設定訓練器，並開始訓練。
-    best_model_path = training(args,train_dataloader, val_dataloader, training_dataset)
+    # best_model_path = training(args,train_dataloader, val_dataloader, training_dataset)
 
     # step 4: 測試模型效能。
-    testing(best_model_path, test_dataloader)
+    best_model_path = ('/home/user/114_Manufacturing/baseline/logs/best_model.ckpt',)
+    # testing.tft(best_model_path, test_dataloader)
+    tft(best_model_path, test_dataloader, training_dataset)
 
 
 if __name__ == '__main__':
@@ -317,7 +370,7 @@ if __name__ == '__main__':
                         default='/home/user/Datasets/2025_BigData/train1/')
     parser.add_argument('--test_data_dir', type=str, metavar='PATH',
                         default='/home/user/Datasets/2025_BigData/test1/')
-    parser.add_argument('--best_dir', type=str, metavar='PATH',
+    parser.add_argument('--best_dir', type=str, metavar='PATH',  # best_model 參數要存哪
                         default='/home/user/114_Manufacturing/baseline/logs/')
     parser.add_argument('--model_name', type=str,
                         default='best_model',)
@@ -336,6 +389,5 @@ if __name__ == '__main__':
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--gpu', type=str, default='0')
     main()
-
 
 
