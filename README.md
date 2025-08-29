@@ -1,8 +1,9 @@
-# Setting: TFT-2
-TemporalFusionTransformer
+# Setting: TFT-3
+TemporalFusionTransformer  
+資料讀取 1 + Target 2 + Dataframe 1  
 Disp. X - RMSE: 0.4903  
 Disp. Z - RMSE: 0.3209  
-
+  
 Baseline model  
 Disp. X - RMSE: 1.6770  
 Disp. Z - RMSE: 1.1058  
