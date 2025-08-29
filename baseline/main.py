@@ -207,9 +207,6 @@ def training(args,train_dataloader, val_dataloader, training_dataset):
         save_top_k=1,  # 只儲存表現最好的那一個
         mode="min"  # val_loss 越小越好
     )
-    # 設定早停法回呼 (callback)
-    # 如果驗證集損失 (val_loss) 在 5 個 epoch 內都沒有改善，就提前停止訓練
-    early_stop_callback = EarlyStopping(monitor="val_loss", min_delta=1e-4, patience=5, verbose=False, mode="min")
 
     # 設定學習率監控回呼
     lr_logger = LearningRateMonitor()
@@ -218,9 +215,7 @@ def training(args,train_dataloader, val_dataloader, training_dataset):
         accelerator="auto",  # 自動偵測 GPU 或 CPU
         # enable_model_summary=True, # 取消註解可以看模型結構
         gradient_clip_val=0.1,  # 梯度裁剪，防止梯度爆炸
-        # limit_train_batches=50,  # 每個 epoch 只用 50 個 batch 來訓練，加速初期除錯
         callbacks=[
-            early_stop_callback,
             # TQDM 在各種終端機環境下的相容性是最好的
             TQDMProgressBar(refresh_rate=10),
             checkpoint_callback
@@ -236,12 +231,6 @@ def training(args,train_dataloader, val_dataloader, training_dataset):
         max_lr=1.0,
         min_lr=1e-6,
     )
-
-    # 顯示建議的學習率和繪圖
-    # print(f"找到的最佳學習率: {lr_find_results.suggestion()}")
-    # fig = lr_find_results.plot(show=True, suggest=True)
-    # fig.show()
-
     # 將找到的最佳學習率賦值給模型
     tft.hparams.learning_rate = lr_find_results.suggestion()
 
@@ -256,83 +245,6 @@ def training(args,train_dataloader, val_dataloader, training_dataset):
     print(f"最佳模型儲存路徑: {best_model_path}")
 
     return best_model_path,
-
-
-def tft(best_model_path, test_dataloader, training_dataset):
-    best_model_path = best_model_path[0]
-    best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
-    print("已成功從檢查點載入最佳模型。")
-    best_tft.eval()
-
-    try:
-        device = next(best_tft.parameters()).device
-    except StopIteration:
-        device = torch.device("cpu")
-    print(f"模型已載入，並位於設備: {device}")
-
-    reals_order = training_dataset.reals
-    idx_x_abs = reals_order.index('disp_x')
-    idx_z_abs = reals_order.index('disp_z')
-
-    final_predictions_x = []
-    final_predictions_z = []
-    final_actuals_x = []
-    final_actuals_z = []
-
-    print("正在逐批次進行預測與還原...")
-    with torch.no_grad():
-        for x, y in iter(test_dataloader):
-            # 轉移數據到指定設備
-            x_on_device = {}
-            for key, val in x.items():
-                if isinstance(val, torch.Tensor):
-                    # 如果值是張量，移動到設備
-                    x_on_device[key] = val.to(device)
-                elif isinstance(val, list) and len(val) > 0 and isinstance(val[0], torch.Tensor):
-                    # 如果值是張量列表，逐一移動
-                    x_on_device[key] = [v.to(device) for v in val]
-                else:
-                    # 如果是其他類型 (例如 int 列表)，保持原樣
-                    x_on_device[key] = val
-
-            # 使用處理過、包含完整資訊的 x_on_device 進行預測
-            model_output = best_tft(x_on_device)
-
-            pred_diffs_x = model_output["prediction"][0][:, :, 3]
-            pred_diffs_z = model_output["prediction"][1][:, :, 3]
-
-            start_x = x_on_device['encoder_cont'][:, -1, idx_x_abs]
-            start_z = x_on_device['encoder_cont'][:, -1, idx_z_abs]
-            actuals_x_batch = x_on_device['decoder_cont'][..., idx_x_abs]
-            actuals_z_batch = x_on_device['decoder_cont'][..., idx_z_abs]
-
-            num_predictions_batch = pred_diffs_x.shape[0]
-            start_x_batch = start_x[:num_predictions_batch]
-            start_z_batch = start_z[:num_predictions_batch]
-
-            reconstructed_x = torch.cumsum(torch.cat([start_x_batch.unsqueeze(1), pred_diffs_x], dim=1), dim=1)[:, 1:]
-            reconstructed_z = torch.cumsum(torch.cat([start_z_batch.unsqueeze(1), pred_diffs_z], dim=1), dim=1)[:, 1:]
-
-            pred_len = reconstructed_x.shape[1]
-
-            final_predictions_x.extend(reconstructed_x.flatten().cpu().numpy())
-            final_predictions_z.extend(reconstructed_z.flatten().cpu().numpy())
-            final_actuals_x.extend(actuals_x_batch[:, :pred_len].flatten().cpu().numpy())
-            final_actuals_z.extend(actuals_z_batch[:, :pred_len].flatten().cpu().numpy())
-
-    predictions_x = np.array(final_predictions_x)
-    predictions_z = np.array(final_predictions_z)
-    actuals_x = np.array(final_actuals_x)
-    actuals_z = np.array(final_actuals_z)
-
-    print("\n--- 定量效能評估 (一階差分還原後) ---")
-    rmse_x = np.sqrt(mean_squared_error(actuals_x, predictions_x))
-    print(f"Disp. X - RMSE: {rmse_x:.4f}")
-    print("-" * 20)
-    rmse_z = np.sqrt(mean_squared_error(actuals_z, predictions_z))
-    print(f"Disp. Z - RMSE: {rmse_z:.4f}")
-
-    return 0
 
 
 def main():
@@ -355,12 +267,10 @@ def main():
     # testing.baseline(test_dataloader)  # 用baseline model 測試
 
     # step 3: 定義模型、設定訓練器，並開始訓練。
-    # best_model_path = training(args,train_dataloader, val_dataloader, training_dataset)
+    best_model_path = training(args,train_dataloader, val_dataloader, training_dataset)
 
     # step 4: 測試模型效能。
-    best_model_path = ('/home/user/114_Manufacturing/baseline/logs/best_model.ckpt',)
-    # testing.tft(best_model_path, test_dataloader)
-    tft(best_model_path, test_dataloader, training_dataset)
+    testing.tft(best_model_path, test_dataloader, training_dataset)
 
 
 if __name__ == '__main__':

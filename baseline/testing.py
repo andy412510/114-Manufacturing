@@ -58,50 +58,72 @@ def baseline(test_dataloader):
     return 0
 
 
-def tft(best_model_path, test_dataloader):
+def tft(best_model_path, test_dataloader, training_dataset):
     best_model_path = best_model_path[0]
     best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
     print("已成功從檢查點載入最佳模型。")
+    best_tft.eval()
 
-    # 執行預測
-    raw_predictions = best_tft.predict(test_dataloader, mode="raw", return_x=True)
+    try:
+        device = next(best_tft.parameters()).device
+    except StopIteration:
+        device = torch.device("cpu")
+    print(f"模型已載入，並位於設備: {device}")
 
-    # --- 最終修正：處理堆疊在一起的多目標預測 ---
+    reals_order = training_dataset.reals
+    idx_x_abs = reals_order.index('disp_x')
+    idx_z_abs = reals_order.index('disp_z')
 
-    # 1. 處理 .x 中的資料：它們是按目標分開的，所以分別拼接
-    actuals_x_tensor = torch.cat(raw_predictions.x["decoder_target"][0], dim=0)
-    actuals_z_tensor = torch.cat(raw_predictions.x["decoder_target"][1], dim=0)
+    final_predictions_x = []
+    final_predictions_z = []
+    final_actuals_x = []
+    final_actuals_z = []
 
-    start_x = torch.cat(raw_predictions.x["encoder_target"][0], dim=0)[:, -1]
-    start_z = torch.cat(raw_predictions.x["encoder_target"][1], dim=0)[:, -1]
+    print("正在逐批次進行預測與還原...")
+    with torch.no_grad():
+        for x, y in iter(test_dataloader):
+            # 轉移數據到指定設備
+            x_on_device = {}
+            for key, val in x.items():
+                if isinstance(val, torch.Tensor):
+                    # 如果值是張量，移動到設備
+                    x_on_device[key] = val.to(device)
+                elif isinstance(val, list) and len(val) > 0 and isinstance(val[0], torch.Tensor):
+                    # 如果值是張量列表，逐一移動
+                    x_on_device[key] = [v.to(device) for v in val]
+                else:
+                    # 如果是其他類型 (例如 int 列表)，保持原樣
+                    x_on_device[key] = val
 
-    # 獲取單一目標的樣本數，這是後續拆分的關鍵
-    num_samples = actuals_x_tensor.shape[0]  # 結果會是 65
+            # 使用處理過、包含完整資訊的 x_on_device 進行預測
+            model_output = best_tft(x_on_device)
 
-    # 2. 處理 .output 中的資料：它是所有目標堆疊在一起的單一列表，先拼接成一個大張量
-    # all_outputs_tensor 的形狀會是 (num_samples * 2, prediction_length, num_quantiles)，例如 (130, 32, 7)
-    all_outputs_tensor = torch.cat(raw_predictions.output, dim=0)
+            pred_diffs_x = model_output["prediction"][0][:, :, 3]
+            pred_diffs_z = model_output["prediction"][1][:, :, 3]
 
-    # 3. 根據樣本數，將堆疊的預測結果拆分回 X 和 Z
-    # 前 num_samples 筆是 X 的預測，後 num_samples 筆是 Z 的預測
-    output_x_tensor = all_outputs_tensor[:num_samples]
-    output_z_tensor = all_outputs_tensor[num_samples:]
+            start_x = x_on_device['encoder_cont'][:, -1, idx_x_abs]
+            start_z = x_on_device['encoder_cont'][:, -1, idx_z_abs]
+            actuals_x_batch = x_on_device['decoder_cont'][..., idx_x_abs]
+            actuals_z_batch = x_on_device['decoder_cont'][..., idx_z_abs]
 
-    # 4. 從拆分好的張量中提取差分值預測 (中位數)
-    pred_diffs_x = output_x_tensor[:, :, 3]  # MEDIAN_IDX = 3
-    pred_diffs_z = output_z_tensor[:, :, 3]
+            num_predictions_batch = pred_diffs_x.shape[0]
+            start_x_batch = start_x[:num_predictions_batch]
+            start_z_batch = start_z[:num_predictions_batch]
 
-    # 5. 執行向量化的累加還原
-    reconstructed_x = torch.cumsum(torch.cat([start_x.unsqueeze(1), pred_diffs_x], dim=1), dim=1)[:, 1:]
-    reconstructed_z = torch.cumsum(torch.cat([start_z.unsqueeze(1), pred_diffs_z], dim=1), dim=1)[:, 1:]
+            reconstructed_x = torch.cumsum(torch.cat([start_x_batch.unsqueeze(1), pred_diffs_x], dim=1), dim=1)[:, 1:]
+            reconstructed_z = torch.cumsum(torch.cat([start_z_batch.unsqueeze(1), pred_diffs_z], dim=1), dim=1)[:, 1:]
 
-    # --- 修正結束 ---
+            pred_len = reconstructed_x.shape[1]
 
-    # --- 將 Tensor 轉為 Numpy 並計算 RMSE ---
-    predictions_x = reconstructed_x.cpu().numpy()
-    predictions_z = reconstructed_z.cpu().numpy()
-    actuals_x = actuals_x_tensor.cpu().numpy()
-    actuals_z = actuals_z_tensor.cpu().numpy()
+            final_predictions_x.extend(reconstructed_x.flatten().cpu().numpy())
+            final_predictions_z.extend(reconstructed_z.flatten().cpu().numpy())
+            final_actuals_x.extend(actuals_x_batch[:, :pred_len].flatten().cpu().numpy())
+            final_actuals_z.extend(actuals_z_batch[:, :pred_len].flatten().cpu().numpy())
+
+    predictions_x = np.array(final_predictions_x)
+    predictions_z = np.array(final_predictions_z)
+    actuals_x = np.array(final_actuals_x)
+    actuals_z = np.array(final_actuals_z)
 
     print("\n--- 定量效能評估 (一階差分還原後) ---")
     rmse_x = np.sqrt(mean_squared_error(actuals_x, predictions_x))
@@ -109,6 +131,7 @@ def tft(best_model_path, test_dataloader):
     print("-" * 20)
     rmse_z = np.sqrt(mean_squared_error(actuals_z, predictions_z))
     print(f"Disp. Z - RMSE: {rmse_z:.4f}")
+
     return 0
 
 
