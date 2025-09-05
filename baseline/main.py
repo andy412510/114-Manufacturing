@@ -133,10 +133,24 @@ def load_and_preprocess_data(data_path: str, settings_filepath: str, prefix: str
         return pd.DataFrame()
 
     df_list = []
-    # --- 以下的合併邏輯與前一版完全相同，無需修改 ---
+    print("\n--- 開始掃描 CSV 檔案並檢查缺失值 ---")
     for file_path in csv_files:
         temp_df = pd.read_csv(file_path)
         temp_df = clean_df(temp_df)
+
+        # ========================== 新增的除錯區塊 ==========================
+        # 檢查 'disp_x' 或 'disp_z' 欄位是否包含任何 NaN 值
+        if temp_df['disp_x'].isna().any() or temp_df['disp_z'].isna().any():
+            nan_count_x = temp_df['disp_x'].isna().sum()
+            nan_count_z = temp_df['disp_z'].isna().sum()
+
+            # 如果發現 NaN，就印出警告訊息和檔案名稱
+            print(f"!!! 警告：在檔案 '{file_path.name}' 中發現缺失值 (NA) !!!")
+            if nan_count_x > 0:
+                print(f"    -> 'disp_x' 欄位有 {nan_count_x} 個缺失值。")
+            if nan_count_z > 0:
+                print(f"    -> 'disp_z' 欄位有 {nan_count_z} 個缺失值。")
+        # ========================== 除錯區塊結束 ==========================
         filename_stem = file_path.stem
 
         match = re.search(r"_(\d{8})_", filename_stem)
@@ -319,10 +333,10 @@ def training(args,train_dataloader, val_dataloader, training_dataset):
     best_model_path = trainer.checkpoint_callback.best_model_path
     print(f"最佳模型儲存路徑: {best_model_path}")
 
-    return best_model_path,
+    return best_model_path
 
 def tft(best_model_path, test_dataloader, training_dataset):
-    best_model_path = best_model_path[0]
+    # best_model_path = best_model_path[0]
     best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
     print("已成功從檢查點載入最佳模型。")
     best_tft.eval()
@@ -417,10 +431,11 @@ def main():
     # testing.baseline(test_dataloader)  # 用baseline model 測試
 
     # step 3: 定義模型、設定訓練器，並開始訓練。
-    best_model_path = training(args,train_dataloader, val_dataloader, training_dataset)
+    # best_model_path = training(args,train_dataloader, val_dataloader, training_dataset)
 
     # step 4: 測試模型效能。
     # testing.tft(best_model_path, test_dataloader, training_dataset)
+    best_model_path = '/home/user/114_Manufacturing/baseline/logs/tft_diff_setting_0.38_0.57.ckpt'
     tft(best_model_path, test_dataloader, training_dataset)
 
 
@@ -428,7 +443,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="contrastive learning on unsupervised re-ID")
     # data
     parser.add_argument('--train_data_dir', type=str, metavar='PATH',
-                        default='/home/user/Datasets/2025_BigData/train1/')
+                        default='/home/user/Datasets/2025_BigData/train_0-5/')
     parser.add_argument('--test_data_dir', type=str, metavar='PATH',
                         default='/home/user/Datasets/2025_BigData/test1/')
     parser.add_argument('--settings_dir', type=str, default='/home/user/Datasets/2025_BigData/setting.xlsx',
@@ -442,7 +457,7 @@ if __name__ == '__main__':
     # MAX_ENCODER_LENGTH: 模型回看的時間步長 (例如: 用過去 128 筆資料)
     # MAX_PREDICTION_LENGTH: 模型預測的未來時間步長 (例如: 預測未來 2 筆資料)
     parser.add_argument('-b', '--batch_size', type=int, default=128)
-    parser.add_argument('-e', '--epochs', type=int, default=100)
+    parser.add_argument('-e', '--epochs', type=int, default=1)
     parser.add_argument('-enl', '--max_encoder_length', type=int, default=64)
     parser.add_argument('-prl', '--max_prediction_length', type=int, default=32)
     parser.add_argument('--hidden_size', type=int, default=32)
