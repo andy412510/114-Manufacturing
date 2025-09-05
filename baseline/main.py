@@ -62,106 +62,181 @@ def clean_df(df):
     df.columns = sanitized_columns
     return df
 
-def load_and_preprocess_data(data_path: str, prefix: str, is_test_set: bool = False) -> pd.DataFrame:
+
+def parse_temperature_info(temp_str):
+    """
+    (全新版本) 解析更複雜的溫度資訊字串。
+    能夠處理 '35 (info) [more_info]' 和 '15→25→15 (info)' 等格式。
+    """
+    # 步驟 1: 處理空值並確保輸入為字串
+    if pd.isna(temp_str):
+        return np.nan, np.nan
+    temp_str = str(temp_str)
+
+    # 步驟 2: (核心) 使用正規表示式移除所有附加資訊
+    # 首先，移除方括號及其中的所有內容
+    cleaned_str = re.sub(r'\[.*\]', '', temp_str)
+    # 接著，移除圓括號及其中的所有內容
+    cleaned_str = re.sub(r'\(.*\)', '', cleaned_str)
+
+    # 步驟 3: 移除處理後可能留下的前後空白
+    cleaned_str = cleaned_str.strip()
+
+    # 步驟 4: 判斷是範圍值還是單一值
+    if '→' in cleaned_str:
+        # 使用 '→' 分割字串，這會處理 '15→25' 和 '15→25→15' 等情況
+        parts = cleaned_str.split('→')
+        try:
+            # 根據您的需求，start_temp 是第一個數字，end_temp 是第二個數字
+            start_temp = float(parts[0].strip())
+            end_temp = float(parts[1].strip())  # 忽略 parts[2] 之後的所有內容
+            return start_temp, end_temp
+        except (ValueError, IndexError):
+            # 如果轉換失敗或只有一個數字 (例如 '15→')，則回傳 NaN
+            return np.nan, np.nan
+    else:
+        # 如果沒有箭頭，則視為單一值
+        try:
+            temp_val = float(cleaned_str)
+            return temp_val, temp_val  # 起始和結束溫度相同
+        except ValueError:
+            return np.nan, np.nan
+
+
+def load_and_preprocess_data(data_path: str, settings_filepath: str, prefix: str) -> pd.DataFrame:
     data_path = Path(data_path)
     csv_files = list(data_path.glob('*.csv'))
+
+    # 讀取並預處理加工設定 Excel 檔案
+    try:
+        settings_df = pd.read_excel(settings_filepath, skiprows=2, header=None)
+
+        settings_columns = [
+            'date',
+            's1_speed', 's1_feed', 's1_time',
+            's2_speed', 's2_feed', 's2_time',
+            's3_speed', 's3_feed', 's3_time',
+            'temp_control_method',
+            'temp_info'
+        ]
+        settings_df.columns = settings_columns
+
+        settings_df['date'] = settings_df['date'].astype(str)
+
+        # --- 呼叫新的解析函式 ---
+        temp_parsed = settings_df['temp_info'].apply(parse_temperature_info)
+        settings_df[['start_temp', 'end_temp']] = pd.DataFrame(temp_parsed.tolist(), index=settings_df.index)
+
+        settings_df.set_index('date', inplace=True)
+    except Exception as e:
+        print(f"處理 Excel 檔案時出錯: {e}")
+        return pd.DataFrame()
+
     df_list = []
-    for i, file_path in enumerate(csv_files):
-        # 讀取單一 CSV 檔案
+    # --- 以下的合併邏輯與前一版完全相同，無需修改 ---
+    for file_path in csv_files:
         temp_df = pd.read_csv(file_path)
-        # 用檔案日期建立唯一的 'group_id'
         temp_df = clean_df(temp_df)
-        filename_stem = file_path.stem # 取得檔名 (不含副檔名)
-        # 使用正規表示式來安全地提取日期
-        # r"_(\d{8})_" 的意思是尋找被底線包圍的 8 個數字
-        temp_df['group_id'] = f"{prefix}_{filename_stem}"  # 建立一個保證唯一的 group_id (維持原狀)
+        filename_stem = file_path.stem
+
         match = re.search(r"_(\d{8})_", filename_stem)
-        if match:
-            date_str = match.group(1)
-        else:
-            print(f"警告: 檔案 '{file_path.stem}' 名稱格式不符，無法提取日期。日期將設定為 'unknown'。")
-            date_str = 'unknown'
+        if not match:
+            print(f"警告: 檔案 '{filename_stem}' 名稱格式不符，無法提取日期，將跳過。")
+            continue
+        date_str = match.group(1)
 
-        temp_df['date'] = date_str  # 新增 date 欄位
+        try:
+            file_settings = settings_df.loc[date_str]
 
-        # 根據浮點數時間 'Time' 進行排序
-        # 這是建立正確 time_idx 的絕對前提
+            temp_df['temp_control_method'] = file_settings['temp_control_method']
+            temp_df['start_temp'] = file_settings['start_temp']
+            temp_df['end_temp'] = file_settings['end_temp']
+
+            elapsed_time = 0.0
+
+            if pd.notna(file_settings['s1_time']):
+                temp_df['轉速'] = file_settings['s1_speed']
+                temp_df['進給'] = file_settings['s1_feed']
+                elapsed_time += file_settings['s1_time']
+
+            if pd.notna(file_settings['s2_time']):
+                temp_df.loc[temp_df['time'] >= elapsed_time, '轉速'] = file_settings['s2_speed']
+                temp_df.loc[temp_df['time'] >= elapsed_time, '進給'] = file_settings['s2_feed']
+                elapsed_time += file_settings['s2_time']
+
+            if pd.notna(file_settings['s3_time']):
+                temp_df.loc[temp_df['time'] >= elapsed_time, '轉速'] = file_settings['s3_speed']
+                temp_df.loc[temp_df['time'] >= elapsed_time, '進給'] = file_settings['s3_feed']
+
+        except KeyError:
+            print(f"警告: 在設定檔中找不到日期為 '{date_str}' 的設定，將跳過檔案 '{filename_stem}'。")
+            continue
+
+        temp_df['group_id'] = f"{prefix}_{filename_stem}"
+        temp_df['date'] = date_str
         temp_df = temp_df.sort_values(by='time').reset_index(drop=True)
-
-        # 建立從 0 開始的整數 'time_idx'
-        # 直接使用排序後的新索引
         temp_df['time_idx'] = temp_df.index
-        # .diff() 會計算與前一行的差值
-        # 每個 group 的第一筆資料會產生 NaN，我們用 0 填充
         temp_df['disp_x_diff'] = temp_df['disp_x'].diff().fillna(0)
         temp_df['disp_z_diff'] = temp_df['disp_z'].diff().fillna(0)
-        # --- 修改結束 ---
+
         df_list.append(temp_df)
+
+    if not df_list:
+        print("錯誤：沒有成功載入任何數據。")
+        return pd.DataFrame()
 
     return pd.concat(df_list, ignore_index=True)
 
+
 def build_dataset(args, train_df, test_df, df_all):
-    encoder_length = args.max_encoder_length  # 模型在做預測時，被允許回看多少筆歷史資料。
-    prediction_length = args.max_prediction_length  # 你希望模型一次預測未來多長的資料。
+    encoder_length = args.max_encoder_length
+    prediction_length = args.max_prediction_length
     b_size = args.batch_size
     num_workers = args.num_workers
-    # --- 定義訓練集的邊界 ---
-    # 找到所有時間序列中，可以用於建立驗證集的分割點
-    # 這個分割點是整個訓練資料的最後一個時間點，減去預測長度
     validation_cutoff = train_df["time_idx"].max() - prediction_length
-    # 根據分割點建立訓練專用的 DataFrame
     training_df_for_dataset = train_df[lambda x: x.time_idx <= validation_cutoff]
-    # --- 實例化 TimeSeriesDataSet ---
+
     training_dataset = TimeSeriesDataSet(
-        training_df_for_dataset,  # 只傳入訓練資料的子集
+        training_df_for_dataset,
         time_idx="time_idx",
-        # target=["disp_x", "disp_z"],  #  多目標預測，傳入 list
-        target=["disp_x_diff", "disp_z_diff"],  #  多目標預測，傳入 list
+        target=["disp_x_diff", "disp_z_diff"],
         group_ids=["group_id"],
         max_encoder_length=encoder_length,
         max_prediction_length=prediction_length,
-        # 靜態特徵 (對於一個 group 永不改變)
-        static_categoricals=["group_id", "date"],  # 將 date 作為靜態分類特徵
-        # 動態特徵 (隨時間改變)，沒有已知的未來特徵，所以這兩項為空
-        time_varying_known_reals=[],
+
+        static_categoricals=["group_id", "date", "temp_control_method"],
+        static_reals=["start_temp", "end_temp"],
+
+        time_varying_known_reals=["轉速", "進給"],
         time_varying_known_categoricals=[],
-        # 隨時間改變，但未來未知的特徵 (所有感測器讀數)
+
         time_varying_unknown_reals=[
-            "disp_x", "disp_z",
-            "disp_x_diff", "disp_z_diff",
+            "disp_x", "disp_z", "disp_x_diff", "disp_z_diff",
             'pt01', 'pt02', 'pt03', 'pt04', 'pt05', 'pt06', 'pt07', 'pt08', 'pt09', 'pt10', 'pt11', 'pt12', 'pt13',
             'tc01', 'tc02', 'tc03', 'tc04', 'tc05', 'tc06', 'tc07', 'tc08',
             'spindle_motor', 'x_motor', 'z_motor'
         ],
-        # 其他設定
+
         add_relative_time_idx=True,
         add_target_scales=True,
         add_encoder_length=True,
-        allow_missing_timesteps=True,  # 允許序列中有缺失的時間步
+        allow_missing_timesteps=True,
 
-        # 傳入完整的 df_all 讓 dataset 學習所有 group 和分類值的編碼
-        # 但它只會從 data_type == 'train' 的部分生成樣本
-        categorical_encoders={'group_id': NaNLabelEncoder().fit(df_all['group_id']),
-                              'date': NaNLabelEncoder().fit(df_all['date'])}
+        categorical_encoders={
+            'group_id': NaNLabelEncoder().fit(df_all['group_id']),
+            'date': NaNLabelEncoder().fit(df_all['date']),
+            'temp_control_method': NaNLabelEncoder().fit(df_all['temp_control_method'])
+        }
     )
-    # --- 建立驗證集和 DataLoader ---
-    # from_dataset 會自動使用 training_dataset 的設定 (例如正規化參數)
-    # 它會自動從 training_cutoff 之後的資料點生成驗證樣本
+
     validation_dataset = TimeSeriesDataSet.from_dataset(training_dataset, train_df, predict=True,
                                                         stop_randomization=True)
-    train_dataloader = training_dataset.to_dataloader(train=True, batch_size=b_size,
-                                                      num_workers=num_workers)
+    train_dataloader = training_dataset.to_dataloader(train=True, batch_size=b_size, num_workers=num_workers)
     val_dataloader = validation_dataset.to_dataloader(train=False, batch_size=b_size * 10, num_workers=num_workers)
-    test_dataset = TimeSeriesDataSet.from_dataset(
-        training_dataset,  # 使用training_dataset的參數設定
-        test_df,
-        stop_randomization=True  # 確保資料順序不變
-    )
-    test_dataloader = test_dataset.to_dataloader(
-        batch_size=b_size,  # 可以使用與訓練時相同的 batch size
-        shuffle=False,  # 測試時絕對不能打亂順序
-        num_workers=num_workers
-    )
+
+    test_dataset = TimeSeriesDataSet.from_dataset(training_dataset, test_df, stop_randomization=True)
+    test_dataloader = test_dataset.to_dataloader(batch_size=b_size, shuffle=False, num_workers=num_workers)
+
     return train_dataloader, val_dataloader, training_dataset, test_dataloader
 
 
@@ -246,14 +321,89 @@ def training(args,train_dataloader, val_dataloader, training_dataset):
 
     return best_model_path,
 
+def tft(best_model_path, test_dataloader, training_dataset):
+    best_model_path = best_model_path[0]
+    best_tft = TemporalFusionTransformer.load_from_checkpoint(best_model_path)
+    print("已成功從檢查點載入最佳模型。")
+    best_tft.eval()
+
+    try:
+        device = next(best_tft.parameters()).device
+    except StopIteration:
+        device = torch.device("cpu")
+    print(f"模型已載入，並位於設備: {device}")
+
+    reals_order = training_dataset.reals
+    idx_x_abs = reals_order.index('disp_x')
+    idx_z_abs = reals_order.index('disp_z')
+
+    final_predictions_x = []
+    final_predictions_z = []
+    final_actuals_x = []
+    final_actuals_z = []
+
+    print("正在逐批次進行預測與還原...")
+    with torch.no_grad():
+        for x, y in iter(test_dataloader):
+            # 轉移數據到指定設備
+            x_on_device = {}
+            for key, val in x.items():
+                if isinstance(val, torch.Tensor):
+                    # 如果值是張量，移動到設備
+                    x_on_device[key] = val.to(device)
+                elif isinstance(val, list) and len(val) > 0 and isinstance(val[0], torch.Tensor):
+                    # 如果值是張量列表，逐一移動
+                    x_on_device[key] = [v.to(device) for v in val]
+                else:
+                    # 如果是其他類型 (例如 int 列表)，保持原樣
+                    x_on_device[key] = val
+
+            # 使用處理過、包含完整資訊的 x_on_device 進行預測
+            model_output = best_tft(x_on_device)
+
+            pred_diffs_x = model_output["prediction"][0][:, :, 3]
+            pred_diffs_z = model_output["prediction"][1][:, :, 3]
+
+            start_x = x_on_device['encoder_cont'][:, -1, idx_x_abs]
+            start_z = x_on_device['encoder_cont'][:, -1, idx_z_abs]
+            actuals_x_batch = x_on_device['decoder_cont'][..., idx_x_abs]
+            actuals_z_batch = x_on_device['decoder_cont'][..., idx_z_abs]
+
+            num_predictions_batch = pred_diffs_x.shape[0]
+            start_x_batch = start_x[:num_predictions_batch]
+            start_z_batch = start_z[:num_predictions_batch]
+
+            reconstructed_x = torch.cumsum(torch.cat([start_x_batch.unsqueeze(1), pred_diffs_x], dim=1), dim=1)[:, 1:]
+            reconstructed_z = torch.cumsum(torch.cat([start_z_batch.unsqueeze(1), pred_diffs_z], dim=1), dim=1)[:, 1:]
+
+            pred_len = reconstructed_x.shape[1]
+
+            final_predictions_x.extend(reconstructed_x.flatten().cpu().numpy())
+            final_predictions_z.extend(reconstructed_z.flatten().cpu().numpy())
+            final_actuals_x.extend(actuals_x_batch[:, :pred_len].flatten().cpu().numpy())
+            final_actuals_z.extend(actuals_z_batch[:, :pred_len].flatten().cpu().numpy())
+
+    predictions_x = np.array(final_predictions_x)
+    predictions_z = np.array(final_predictions_z)
+    actuals_x = np.array(final_actuals_x)
+    actuals_z = np.array(final_actuals_z)
+
+    print("\n--- 定量效能評估 (一階差分還原後) ---")
+    rmse_x = np.sqrt(mean_squared_error(actuals_x, predictions_x))
+    print(f"Disp. X - RMSE: {rmse_x:.4f}")
+    print("-" * 20)
+    rmse_z = np.sqrt(mean_squared_error(actuals_z, predictions_z))
+    print(f"Disp. Z - RMSE: {rmse_z:.4f}")
+
+    return 0
 
 def main():
     args = parser.parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
     # step 1: 讀取指定目錄下的所有 CSV 檔案，並將它們處理、合併成一個 DataFrame。
-    train_df = load_and_preprocess_data(args.train_data_dir, prefix='train', is_test_set=False)
-    test_df = load_and_preprocess_data(args.test_data_dir, prefix='test', is_test_set=True)
+    train_df = load_and_preprocess_data(args.train_data_dir, args.settings_dir, prefix='train')
+    test_df = load_and_preprocess_data(args.test_data_dir, args.settings_dir, prefix='test')
     print("\n--- 資料讀取成功！---")
     train_df['data_type'] = 'train'
     test_df['data_type'] = 'test'
@@ -270,7 +420,8 @@ def main():
     best_model_path = training(args,train_dataloader, val_dataloader, training_dataset)
 
     # step 4: 測試模型效能。
-    testing.tft(best_model_path, test_dataloader, training_dataset)
+    # testing.tft(best_model_path, test_dataloader, training_dataset)
+    tft(best_model_path, test_dataloader, training_dataset)
 
 
 if __name__ == '__main__':
@@ -280,6 +431,8 @@ if __name__ == '__main__':
                         default='/home/user/Datasets/2025_BigData/train1/')
     parser.add_argument('--test_data_dir', type=str, metavar='PATH',
                         default='/home/user/Datasets/2025_BigData/test1/')
+    parser.add_argument('--settings_dir', type=str, default='/home/user/Datasets/2025_BigData/setting.xlsx',
+                        help='Path to the manufacturing settings Excel file')
     parser.add_argument('--best_dir', type=str, metavar='PATH',  # best_model 參數要存哪
                         default='/home/user/114_Manufacturing/baseline/logs/')
     parser.add_argument('--model_name', type=str,

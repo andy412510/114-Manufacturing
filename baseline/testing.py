@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import torch
+import pandas as pd
 from pytorch_forecasting import (
     Baseline,
     NBeats,
@@ -135,4 +136,53 @@ def tft(best_model_path, test_dataloader, training_dataset):
     return 0
 
 
+def calculate_100_rmse(results_df: pd.DataFrame):
+    """
+    根據修改後的公式，計算合併的、在前 100 個時間點（可預測範圍內）的 RMSE。
+    """
+    print("\n--- 正在計算前 100 筆資料的綜合 RMSE (可預測範圍 64-99) ---")
 
+    # 步驟 1: 根據公式要求，篩選出 time_idx 在 64 到 99 之間的數據點
+    # 這對應了 j=65 到 j=100 的 36 個可預測點
+    eval_df = results_df[(results_df['time_idx'] >= 64) & (results_df['time_idx'] <= 99)].copy()
+
+    # 步驟 2: 檢查是否有足夠的數據
+    if eval_df.empty:
+        print("分析：在您的測試數據中，沒有找到 time_idx 在 [64, 99] 範圍內的數據點。")
+        print("因此，無法計算此區間的 RMSE。")
+        return
+
+    # 步驟 3: 根據公式計算合併誤差
+    eval_df['squared_error_x'] = (eval_df['pred_x'] - eval_df['actual_x']) ** 2
+    eval_df['squared_error_z'] = (eval_df['pred_z'] - eval_df['actual_z']) ** 2
+
+    sum_of_squared_errors = eval_df['squared_error_x'].sum() + eval_df['squared_error_z'].sum()
+
+    # 總共有 len(eval_df) 個點，每個點有 X 和 Z 兩個誤差項
+    total_error_terms = 2 * len(eval_df)
+
+    if total_error_terms == 0:
+        print("分析：沒有有效的誤差項可供計算。")
+        return
+
+    mean_squared_error_combined = sum_of_squared_errors / total_error_terms
+
+    rmse = np.sqrt(mean_squared_error_combined)
+
+    print(f"綜合 RMSE (time_idx 64-99): {rmse:.4f}")
+
+def calculate_competition_rmse(results_df: pd.DataFrame):
+    print("\n--- 正在計算競賽指定的 RMSE (time_idx >= 100) ---")
+    eval_df = results_df[results_df['time_idx'] >= 100].copy()
+    if eval_df.empty:
+        print("分析：在您的測試數據中，沒有找到 time_idx >= 100 的數據點。")
+        print("因此，無法計算競賽指定的 RMSE。")
+        return
+    eval_df['squared_error_x'] = (eval_df['pred_x'] - eval_df['actual_x'])**2
+    eval_df['squared_error_z'] = (eval_df['pred_z'] - eval_df['actual_z'])**2
+    sum_of_squared_errors = eval_df['squared_error_x'].sum() + eval_df['squared_error_z'].sum()
+    total_error_terms = 2 * len(eval_df)
+    if total_error_terms == 0: return
+    mean_squared_error_combined = sum_of_squared_errors / total_error_terms
+    competition_rmse = np.sqrt(mean_squared_error_combined)
+    print(f"競賽 RMSE (time_idx >= 100): {competition_rmse:.4f}")
