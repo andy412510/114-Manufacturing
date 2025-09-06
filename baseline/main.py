@@ -431,11 +431,11 @@ def main():
     # testing.baseline(test_dataloader)  # 用baseline model 測試
 
     # step 3: 定義模型、設定訓練器，並開始訓練。
-    # best_model_path = training(args,train_dataloader, val_dataloader, training_dataset)
+    best_model_path = training(args,train_dataloader, val_dataloader, training_dataset)
 
     # step 4: 測試模型效能。
     # testing.tft(best_model_path, test_dataloader, training_dataset)
-    best_model_path = '/home/user/114_Manufacturing/baseline/logs/tft_diff_setting_0.38_0.57.ckpt'
+    # best_model_path = '/home/user/114_Manufacturing/baseline/logs/tft_diff_setting.ckpt'
     tft(best_model_path, test_dataloader, training_dataset)
 
 
@@ -451,13 +451,13 @@ if __name__ == '__main__':
     parser.add_argument('--best_dir', type=str, metavar='PATH',  # best_model 參數要存哪
                         default='/home/user/114_Manufacturing/baseline/logs/')
     parser.add_argument('--model_name', type=str,
-                        default='best_model',)
+                        default='tft_diff_setting',)
     # --- 設定基礎參數 ---
     # 這些參數會影響模型如何從時間序列中生成樣本
     # MAX_ENCODER_LENGTH: 模型回看的時間步長 (例如: 用過去 128 筆資料)
     # MAX_PREDICTION_LENGTH: 模型預測的未來時間步長 (例如: 預測未來 2 筆資料)
     parser.add_argument('-b', '--batch_size', type=int, default=128)
-    parser.add_argument('-e', '--epochs', type=int, default=1)
+    parser.add_argument('-e', '--epochs', type=int, default=100)
     parser.add_argument('-enl', '--max_encoder_length', type=int, default=64)
     parser.add_argument('-prl', '--max_prediction_length', type=int, default=32)
     parser.add_argument('--hidden_size', type=int, default=32)
