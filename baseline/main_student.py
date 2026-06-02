@@ -394,9 +394,9 @@ def tft(best_model_path, test_dataloader, training_dataset, output_dir):
         'Metric': ['Disp. X - RMSE', 'Disp. Z - RMSE'],
         'Value': [rmse_x, rmse_z]
     })  #
-    output_path = os.path.join(output_dir, f'rmse_results_{timestamp}.csv')  #
-    rmse_df.to_csv(output_path, index=False)  #
-    print(f"\n標準 RMSE 結果已保存至: {output_path}")
+    # output_path = os.path.join(output_dir, f'rmse_results_{timestamp}.csv')  #
+    # rmse_df.to_csv(output_path, index=False)  #
+    # print(f"\n標準 RMSE 結果已保存至: {output_path}")
 
     return 0
 
@@ -414,8 +414,8 @@ def main():
 
     train_dataloader, val_dataloader, training_dataset, test_dataloader = build_dataset(args, train_df, test_df, df_all)
     print("\n--- TimeSeriesDataSet 和 DataLoader 建立成功！---")
-    best_model_path = training(args, train_dataloader, val_dataloader, training_dataset)
-    # best_model_path = '/home/user/114_Manufacturing/baseline/logs/tft_diff_student_0.33_0.19.ckpt'
+    # best_model_path = training(args, train_dataloader, val_dataloader, training_dataset)
+    best_model_path = '/home/user/114_Manufacturing/baseline/logs/tft_diff_student_0.33_0.19.ckpt'
     tft(best_model_path, test_dataloader, training_dataset, args.best_dir)
 
 if __name__ == '__main__':
