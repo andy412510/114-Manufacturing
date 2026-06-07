@@ -56,12 +56,12 @@ def main():
         '--mode', required=True, choices=['train', 'infer', 'evaluate'],
         help='執行模式：train（訓練）、infer（推論填答）、evaluate（評估）'
     )
-    parser.add_argument('--env_excel_path', type=str, default='/content/drive/MyDrive/Time-LLM-main/檔案環境設定總表.xlsx')
-    parser.add_argument('--train_folder',   type=str, default='/content/drive/MyDrive/Time-LLM-main/TRAIN 0-5')
-    parser.add_argument('--test_folder',    type=str, default='/content/drive/MyDrive/Time-LLM-main/初賽測驗用數據')
-    parser.add_argument('--train_csv_path', type=str, default='/content/drive/MyDrive/train_env.csv')
-    parser.add_argument('--model_path',     type=str, default='/content/drive/MyDrive/time_llm_ace_env_v2.pth')
-    parser.add_argument('--output_folder',  type=str, default='/content/drive/MyDrive/Time-LLM-main/預測結果輸出')
+    parser.add_argument('--env_excel_path', type=str, default='/srv/Datasets/2025_BigData/檔案環境設定總表.xlsx')
+    parser.add_argument('--train_folder',   type=str, default='/srv/Datasets/2025_BigData/TRAIN 0-5')
+    parser.add_argument('--test_folder',    type=str, default='/srv/Datasets/2025_BigData/TEST 0-5/初賽測驗用數據')
+    parser.add_argument('--train_csv_path', type=str, default='/srv/Datasets/2025_BigData/output/train_env.csv')
+    parser.add_argument('--pretrain_path',     type=str, default='/srv/Checkpoints/time_llm_ace_env_v2.pth')
+    parser.add_argument('--output_folder',  type=str, default='/srv/Datasets/2025_BigData/output/預測結果輸出')
     parser.add_argument('--batch_size', type=int,   default=4)
     parser.add_argument('--epochs',     type=int,   default=20)
     parser.add_argument('--lr',         type=float, default=1e-4)
@@ -80,6 +80,5 @@ if __name__ == '__main__':
     main()
 
 """
-我想要訂立實驗室的commit規則，請幫我搜尋claude code上傳git commit時，有什麼特定的格式?或是和 git 相關的skill，會用哪種格式撰寫commit?
-請根據你的格式，幫我使用繁體中文撰寫一個CONTRIBUTING.md，明確說明如何寫commit，並附上詳細的範例。
+
 """
