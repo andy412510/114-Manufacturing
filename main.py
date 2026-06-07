@@ -78,3 +78,8 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+"""
+我想要訂立實驗室的commit規則，請幫我搜尋claude code上傳git commit時，有什麼特定的格式?或是和 git 相關的skill，會用哪種格式撰寫commit?
+請根據你的格式，幫我使用繁體中文撰寫一個CONTRIBUTING.md，明確說明如何寫commit，並附上詳細的範例。
+"""
