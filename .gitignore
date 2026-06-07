@@ -185,4 +185,8 @@ poetry.toml
 # ruff
 .ruff_cache/
 
+# data
+TEST 0-5.zip
+TRAIN 0-5.zip
+檔案環境設定總表.xlsx
 # End of https://www.toptal.com/developers/gitignore/api/linux,python
